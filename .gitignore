@@ -1,5 +1,6 @@
 # Amazon ML Challenge dataset
 dataset/
+data/
 
 # Generated files
 outputs/

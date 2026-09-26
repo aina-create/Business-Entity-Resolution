@@ -1,0 +1,13 @@
+# Amazon ML Challenge dataset
+dataset/
+
+# Generated files
+outputs/
+
+# Python environments and cache
+__pycache__/
+.venv/
+venv/
+
+# macOS files
+.DS_Store

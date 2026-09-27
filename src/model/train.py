@@ -1,260 +1,103 @@
-import pandas as pd
+"""Train a compact logistic matcher from pairwise feature TSV data.
+
+Input must contain the feature columns produced by normalization.create_features
+and a binary ``match`` label. Keeping candidate generation separate avoids
+materializing the Cartesian product of the multi-million-row source files.
+"""
+
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 
-from src.blocking.candidate_generation import (
-    generate_candidates
-)
-
-
-# =========================================================
-# PROJECT PATHS
-# =========================================================
+from src.preprocessing.normalization import FEATURE_COLUMNS
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-
-DATA_DIR = BASE_DIR / "data" / "train"
-
-
-# =========================================================
-# LOAD GROUND TRUTH
-# =========================================================
-
-def load_ground_truth():
-
-    ground_truth_path = (
-        DATA_DIR / "train_ground_truth.tsv"
-    )
-
-    return pd.read_csv(
-        ground_truth_path,
-        sep="\t"
-    )
+DEFAULT_MODEL = BASE_DIR / "models" / "entity_matcher.npz"
 
 
-# =========================================================
-# CREATE MATCH DICTIONARY
-# =========================================================
-
-def create_match_set(ground_truth):
-
-    match_dict = {}
-
-    for source1_id, matched_ids in zip(
-        ground_truth["source1_entity_id"],
-        ground_truth["matched_entity_ids"]
-    ):
-
-        if pd.isna(matched_ids):
-
-            match_dict[source1_id] = set()
-
-            continue
-
-        match_dict[source1_id] = {
-            entity_id.strip()
-            for entity_id in str(
-                matched_ids
-            ).split(",")
-            if entity_id.strip()
-        }
-
-    return match_dict
+def _sigmoid(z):
+    z = np.clip(z, -35, 35)
+    return 1.0 / (1.0 + np.exp(-z))
 
 
-# =========================================================
-# LABEL CANDIDATES
-# =========================================================
-
-def label_candidates(
-    candidates,
-    match_dict
-):
-
-    candidates = candidates.copy()
-
-    def get_label(row):
-
-        source1_id = row[
-            "source1_entity_id"
-        ]
-
-        candidate_id = row[
-            "candidate_entity_id"
-        ]
-
-        actual_matches = match_dict.get(
-            source1_id,
-            set()
-        )
-
-        return int(
-            candidate_id in actual_matches
-        )
-
-    candidates["match"] = (
-        candidates.apply(
-            get_label,
-            axis=1
-        )
-    )
-
-    return candidates
+def train_model(features: pd.DataFrame, labels, *, epochs: int = 8, learning_rate: float = 0.08,
+                l2: float = 1e-4) -> dict:
+    """Fit weighted logistic regression on already materialized pair features."""
+    missing = [c for c in FEATURE_COLUMNS if c not in features]
+    if missing:
+        raise ValueError(f"Training data is missing feature columns: {missing}")
+    x = features[FEATURE_COLUMNS].to_numpy(dtype=np.float64)
+    y = np.asarray(labels, dtype=np.float64).reshape(-1)
+    if len(x) != len(y) or not len(y):
+        raise ValueError("Features and labels must have equal, non-zero row counts")
+    if not np.isin(y, [0, 1]).all() or len(np.unique(y)) < 2:
+        raise ValueError("Training labels must contain both 0 and 1")
+    mean = x.mean(axis=0)
+    scale = x.std(axis=0)
+    scale[scale < 1e-8] = 1.0
+    x = (x - mean) / scale
+    weights = np.zeros(x.shape[1], dtype=np.float64)
+    bias = 0.0
+    positive_weight = (len(y) - y.sum()) / max(y.sum(), 1.0)
+    sample_weight = np.where(y == 1, positive_weight, 1.0)
+    # Full batch gradient descent is deterministic and stable for this small
+    # feature set. Chunked file loading is exposed separately for large tables.
+    for _ in range(epochs):
+        error = (_sigmoid(x @ weights + bias) - y) * sample_weight
+        weights -= learning_rate * ((x.T @ error) / len(y) + l2 * weights)
+        bias -= learning_rate * error.mean()
+    return {"weights": weights, "bias": np.asarray(bias), "mean": mean, "scale": scale,
+            "feature_columns": np.asarray(FEATURE_COLUMNS), "positive_weight": np.asarray(positive_weight)}
 
 
-# =========================================================
-# TEST
-# =========================================================
+def train_file(input_path: Path, model_path: Path, *, epochs: int = 8, chunk_size: int = 50_000):
+    """Train using repeated sequential chunk passes, keeping only one chunk in RAM."""
+    columns = [*FEATURE_COLUMNS, "match"]
+    positives = negatives = 0
+    for frame in pd.read_csv(input_path, sep="\t", usecols=["match"], chunksize=chunk_size):
+        positives += int((frame.match == 1).sum())
+        negatives += int((frame.match == 0).sum())
+    total = positives + negatives
+    if not positives or not negatives:
+        raise ValueError("Training labels must contain both 0 and 1")
+    weights = np.zeros(len(FEATURE_COLUMNS), dtype=np.float64)
+    bias = 0.0
+    positive_weight = negatives / positives
+    step = 0
+    # Features are bounded [0,1], so no global standardization pass is needed.
+    # Use a decaying rate because chunks arrive in file order, not shuffled.
+    for epoch in range(epochs):
+        for frame in pd.read_csv(input_path, sep="\t", usecols=columns, chunksize=chunk_size):
+            x = frame[FEATURE_COLUMNS].to_numpy(dtype=np.float64)
+            y = frame["match"].to_numpy(dtype=np.float64)
+            sw = np.where(y == 1, positive_weight, 1.0)
+            error = (_sigmoid(x @ weights + bias) - y) * sw
+            rate = 0.03 / np.sqrt(1.0 + step / 100.0)
+            weights -= rate * ((x.T @ error) / max(1, len(y)) + 1e-4 * weights)
+            bias -= rate * error.mean()
+            step += 1
+        print(f"Epoch {epoch + 1}/{epochs}", flush=True)
+    model = {"weights": weights, "bias": np.asarray(bias),
+             "mean": np.zeros(len(FEATURE_COLUMNS)), "scale": np.ones(len(FEATURE_COLUMNS)),
+             "feature_columns": np.asarray(FEATURE_COLUMNS), "positive_weight": np.asarray(positive_weight)}
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(model_path, **model)
+    print(f"Saved model to {model_path} ({total:,} pairs; {positives:,} positive)")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("features", type=Path, help="Pairwise labeled feature TSV")
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--chunk-size", type=int, default=50_000)
+    args = parser.parse_args()
+    train_file(args.features, args.model, epochs=args.epochs, chunk_size=args.chunk_size)
+
 
 if __name__ == "__main__":
-
-    print("=" * 60)
-    print("CANDIDATE LABELING TEST")
-    print("=" * 60)
-
-    # -----------------------------------------------------
-    # Load small samples
-    # -----------------------------------------------------
-
-    print("\nLoading Source 1...")
-
-    source1 = pd.read_csv(
-        DATA_DIR / "train_source1.tsv",
-        sep="\t",
-        nrows=1000
-    )
-
-    print(
-        f"Source 1 rows: {len(source1):,}"
-    )
-
-    print("\nLoading Source 2...")
-
-    source2 = pd.read_csv(
-        DATA_DIR / "train_source2.tsv",
-        sep="\t",
-        nrows=1000
-    )
-
-    print(
-        f"Source 2 rows: {len(source2):,}"
-    )
-
-    # -----------------------------------------------------
-    # Generate candidates
-    # -----------------------------------------------------
-
-    print(
-        "\nGenerating candidate pairs..."
-    )
-
-    candidates = generate_candidates(
-        source1,
-        source2
-    )
-
-    print(
-        f"Candidate pairs: {len(candidates):,}"
-    )
-
-    # -----------------------------------------------------
-    # Load ground truth
-    # -----------------------------------------------------
-
-    print(
-        "\nLoading ground truth..."
-    )
-
-    ground_truth = load_ground_truth()
-
-    print(
-        f"Ground truth rows: "
-        f"{len(ground_truth):,}"
-    )
-
-    # -----------------------------------------------------
-    # Create match dictionary
-    # -----------------------------------------------------
-
-    print(
-        "\nCreating match dictionary..."
-    )
-
-    match_dict = create_match_set(
-        ground_truth
-    )
-
-    # -----------------------------------------------------
-    # Label candidates
-    # -----------------------------------------------------
-
-    print(
-        "\nLabeling candidates..."
-    )
-
-    labeled_candidates = label_candidates(
-        candidates,
-        match_dict
-    )
-
-    # -----------------------------------------------------
-    # Count labels
-    # -----------------------------------------------------
-
-    matches = (
-        labeled_candidates["match"] == 1
-    ).sum()
-
-    non_matches = (
-        labeled_candidates["match"] == 0
-    ).sum()
-
-    print("\nRESULT")
-    print("-" * 40)
-
-    print(
-        f"Total candidates : "
-        f"{len(labeled_candidates):,}"
-    )
-
-    print(
-        f"Actual matches   : "
-        f"{matches:,}"
-    )
-
-    print(
-        f"Non-matches      : "
-        f"{non_matches:,}"
-    )
-
-    # -----------------------------------------------------
-    # Display actual matches
-    # -----------------------------------------------------
-
-    if matches > 0:
-
-        print(
-            "\nSample actual matches:"
-        )
-
-        print(
-            labeled_candidates[
-                labeled_candidates["match"] == 1
-            ][
-                [
-                    "source1_entity_id",
-                    "source1_business_name",
-                    "candidate_entity_id",
-                    "candidate_business_name",
-                    "match"
-                ]
-            ]
-            .head(10)
-            .to_string(index=False)
-        )
-
-    print(
-        "\nCandidate labeling test completed."
-    )
-
-    print("=" * 60)
+    main()

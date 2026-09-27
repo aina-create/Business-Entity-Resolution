@@ -1,14 +1,21 @@
-# Amazon ML Challenge dataset
+# Challenge data and generated predictions
 dataset/
 data/
-
-# Generated files
+output/
 outputs/
+validation/
 
-# Python environments and cache
+# Local model artifacts and temporary databases
+models/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Python environments and caches
 __pycache__/
+*.py[cod]
 .venv/
 venv/
 
-# macOS files
+# macOS metadata
 .DS_Store

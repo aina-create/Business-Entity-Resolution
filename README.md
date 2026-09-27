@@ -60,6 +60,18 @@ The ground truth file (`train_ground_truth.tsv`) has two columns:
 
 No ground truth is provided for the test set. To measure your own performance, hold out a validation split from the training data and score it yourself using the F_0.5 formula given below.
 
+### Local validation pipeline
+
+Run a deterministic entity-level train/validation split, candidate blocking, pair-feature generation, model training, threshold selection, and validation prediction with:
+
+```bash
+python -m src.evaluation.validation_pipeline
+```
+
+The default development run samples the first 100,000 Source 1 training records, assigns every fifth record to validation, and indexes all Source 2 and Source 3 training records. It writes the trained model under `models/` and validation outputs plus reusable candidate work files under `validation/`. Those generated directories are ignored by Git. Use `--max-source1 0` to use all Source 1 records; `--block-cap` controls how many target rows a blocking key may contribute. The script selects a threshold by macro F0.5 and reports blocking recall and an exact-name baseline for comparison. Since threshold tuning is the inexpensive repeat step, use `--threshold-only` after one successful run to reuse the saved work files. For a narrower threshold grid, pass `--thresholds 0.35 0.45 0.5 0.55 0.65`.
+
+After validation succeeds, generate test candidates and predictions with `python main.py`. If `models/entity_matcher.npz` exists, the generator feeds its capped candidate pairs to that model and uses the threshold in `validation/validation_metrics.json`; pass `--threshold` to override it. Without a trained model, it emits the exact-name baseline. The generated `candidate_pairs.tsv` is the exact candidate set scored by the model.
+
 ### Output Format:
 
 Your solution produces **two** tab-separated files, both placed in the `output/`

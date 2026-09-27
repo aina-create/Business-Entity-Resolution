@@ -1,74 +1,52 @@
-# ML Challenge 2026: Business Entity Resolution Solution Template
+# ML Challenge 2026: Business Entity Resolution
 
-**Team Name:** [Your Team Name]  
-**Team Members:** [List all team members]  
-**Submission Date:** [Date]
+**Team:** [team name]
+**Members:** [names]
+**Submission date:** [date]
 
----
+## 1. Executive summary
 
-## 1. Executive Summary
-*Provide a brief 2-3 sentence overview of your approach and key innovations.*
+[Summarize the method, candidate reduction, model, and validation result. Clearly mark any unmeasured result.]
 
----
+## 2. Data and validation
 
-## 2. Methodology
+- Training split: [record counts and sources]
+- Validation design: [held-out entities/split method; avoid splitting candidate pairs after labels]
+- Test handling: retain all country labels, including labels absent in training.
+- Metric: macro F0.5 over every Source 1 entity, including singletons.
 
-### 2.1 Problem Analysis
-*Key insights discovered during EDA — noise patterns, address variations, missing fields, etc.*
+## 3. Candidate generation
 
-### 2.2 Solution Strategy
-*Outline your high-level approach.*
+- Blocking keys: [exact normalized name, country/name prefixes, address keys, etc.]
+- Maximum block size or other caps: [values and rationale]
+- Candidate count and reduction ratio: [measured values]
+- Blocking recall on held-out ground truth: [measured value]
+- Explain how rows with no candidates are represented in `candidate_pairs.tsv`.
 
-**Approach Type:** [Blocking + Classifier / End-to-End / Graph-Based / Hybrid, etc]  
-**Core Innovation:** [Brief description of your main technical contribution]
+## 4. Matching model
 
----
+- Model: [algorithm and license]
+- Features: [name, address, country and blocking features]
+- Training labels and negative sampling: [details]
+- Threshold selection: [method; optimize validation macro F0.5]
+- Model artifact and exact training command: [path/command]
 
-## 3. Candidate Generation (Blocking)
-*Describe how you reduced the comparison space to a manageable candidate set.*
+## 5. Results and error analysis
 
-- **Blocking keys used:** [e.g., PIN code, phonetic name encoding, TF-IDF, etc.]
-- **Candidate pairs generated:** [total]
-- **How you ensured true matches were not lost:**
+| Measure | Validation result |
+| --- | ---: |
+| Macro F0.5 | [value] |
+| Precision / recall | [values] |
+| Blocking recall | [value] |
+| Candidate pairs | [count] |
 
----
+False positives: [examples/patterns]
+False negatives: [examples/patterns]
 
-## 4. Matching Model
+## 6. Reproduction
 
-**Features used:**
-- Name features: [e.g., Jaccard, Levenshtein, phonetic encoding]
-- Address features: [e.g., token overlap, edit distance, PIN code matching]
-- Other: []
+Document the Python version, dependencies, data directory, commands, and expected output files. The package should reproduce both `output/matching_results.tsv` and `output/candidate_pairs.tsv` from the supplied training and test data.
 
-**Model type:** [e.g., XGBoost, Siamese Network, Transformer, etc.]  
-**Threshold selection method:** [e.g., F_0.5 optimization on validation set]
+## 7. Limitations
 
----
-
-## 5. Results & Error Analysis
-
-- **F_0.5 Score (macro):** [your best validation score]
-- **Common false positives (wrong merges):** [brief description]
-- **Common false negatives (missed matches):** [brief description]
-
----
-
-## 6. Conclusion
-*Summarize your approach, key achievements, and lessons learned in 2-3 sentences.*
-
----
-
-## Appendix
-
-### A. Code Artefacts
-*Your complete, runnable code ships in the submission zip under
-`code/business_entity_resolution/` (all source in `src/`, with a `README.md` and
-`requirements.txt`). Summarise its structure and the entry point(s) to reproduce
-`output/matching_results.tsv` and `output/candidate_pairs.tsv` here.*
-
-### B. Additional Results
-*Include any additional charts, graphs, or detailed results.*
-
----
-
-**Note:** Teams can modify sections according to their approach while maintaining clarity and technical depth.
+[State unvalidated assumptions, block caps that may miss true matches, memory/disk requirements, and any model/output components still using a baseline rule.]
